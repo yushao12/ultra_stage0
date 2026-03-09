@@ -1,0 +1,17 @@
+<mujoco model="box_object">
+  <compiler angle="radian" autolimits="true"/>
+
+  <worldbody>
+    <body name="box">
+      <freejoint name="box_free_joint"/>
+      <geom
+        name="box_collision"
+        type="box"
+        size="0.2 0.2 0.2"
+        mass="8.0"
+        rgba="0.8 0.4 0.2 1.0"
+        contype="1"
+        conaffinity="1"/>
+    </body>
+  </worldbody>
+</mujoco>

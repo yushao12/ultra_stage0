@@ -174,8 +174,9 @@ def main(args: Args) -> None:
   index_1 = torch.minimum(index_0 + 1, torch.tensor(qpos.shape[0] - 1))
   blend = phase * (qpos.shape[0] - 1) - index_0
 
-  base_quat_input = qpos[:, 0:4]
-  base_pos_input = qpos[:, 4:7]
+  # Omniretarget/MuJoCo qpos layout: base pos (xyz), then base quat (wxyz).
+  base_pos_input = qpos[:, 0:3]
+  base_quat_input = qpos[:, 3:7]
   joint_pos_input = qpos[:, 7 : 7 + joint_dof]
 
   base_pos = _lerp(base_pos_input[index_0], base_pos_input[index_1], blend.unsqueeze(-1))
@@ -188,8 +189,9 @@ def main(args: Args) -> None:
 
   object_pos = object_quat = object_lin_vel = object_ang_vel = None
   if has_object:
-    object_quat_input = qpos[:, -7:-3]
-    object_pos_input = qpos[:, -3:]
+    # Optional object tail layout: object pos (xyz), then object quat (wxyz).
+    object_pos_input = qpos[:, -7:-4]
+    object_quat_input = qpos[:, -4:]
     object_pos = _lerp(object_pos_input[index_0], object_pos_input[index_1], blend.unsqueeze(-1))
     object_quat = _slerp(object_quat_input[index_0], object_quat_input[index_1], blend)
     object_lin_vel = torch.gradient(object_pos, spacing=output_dt, dim=0)[0]

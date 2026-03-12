@@ -5,12 +5,13 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
+
 import torch
 import tyro
 
-from mjlab.rsl_rl.runners import OnPolicyRunner
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
+from mjlab.rsl_rl.runners import OnPolicyRunner
 from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls
 from mjlab.tasks.tracking.mdp import MotionCommandCfg
 from mjlab.utils.os import get_wandb_checkpoint_path
@@ -33,6 +34,7 @@ class PlayConfig:
     video_width: int | None = None
     camera: int | str | None = None
     viewer: Literal["auto", "native", "viser"] = "auto"
+    disable_terminations: bool = False
 
     # Internal flag used by demo script.
     _demo_mode: tyro.conf.Suppress[bool] = False
@@ -48,6 +50,10 @@ def run_play(task_id: str, cfg: PlayConfig):
 
     DUMMY_MODE = cfg.agent in {"zero", "random"}
     TRAINED_MODE = not DUMMY_MODE
+
+    if cfg.disable_terminations:
+        env_cfg.terminations = {}
+        print("[INFO] Disabled all terminations for play mode.")
 
     # Check if this is a tracking task by checking for motion command.
     is_tracking_task = "motion" in env_cfg.commands and isinstance(
@@ -71,13 +77,13 @@ def run_play(task_id: str, cfg: PlayConfig):
 
         motion_path = Path(cfg.motion_file).expanduser().resolve()
         if not motion_path.exists():
-          raise FileNotFoundError(f"Motion file not found: {motion_path}")
+            raise FileNotFoundError(f"Motion file not found: {motion_path}")
 
         motion_cmd.motion_file = str(motion_path)
 
         if cfg._demo_mode:
-          # Demo mode: increase diversity
-          motion_cmd.sampling_mode = "uniform"
+            # Demo mode: increase diversity
+            motion_cmd.sampling_mode = "uniform"
 
         print(f"[INFO] Using local motion file: {motion_cmd.motion_file}")
 
@@ -86,27 +92,28 @@ def run_play(task_id: str, cfg: PlayConfig):
 
     if TRAINED_MODE:
         log_root_path = (Path("logs") / "rsl_rl" / agent_cfg.experiment_name).resolve()
-    if cfg.checkpoint_file is not None:
-        resume_path = Path(cfg.checkpoint_file)
-        if not resume_path.exists():
-            raise FileNotFoundError(f"Checkpoint file not found: {resume_path}")
-        print(f"[INFO]: Loading checkpoint: {resume_path.name}")
-    else:
-        if cfg.wandb_run_path is None:
-            raise ValueError(
-                "`wandb_run_path` is required when `checkpoint_file` is not provided."
+
+        if cfg.checkpoint_file is not None:
+            resume_path = Path(cfg.checkpoint_file)
+            if not resume_path.exists():
+                raise FileNotFoundError(f"Checkpoint file not found: {resume_path}")
+            print(f"[INFO]: Loading checkpoint: {resume_path.name}")
+        else:
+            if cfg.wandb_run_path is None:
+                raise ValueError(
+                    "`wandb_run_path` is required when `checkpoint_file` is not provided."
+                )
+            resume_path, was_cached = get_wandb_checkpoint_path(
+                log_root_path, Path(cfg.wandb_run_path)
             )
-        resume_path, was_cached = get_wandb_checkpoint_path(
-            log_root_path, Path(cfg.wandb_run_path)
-        )
-        # Extract run_id and checkpoint name from path for display.
-        run_id = resume_path.parent.name
-        checkpoint_name = resume_path.name
-        cached_str = "cached" if was_cached else "downloaded"
-        print(
-            f"[INFO]: Loading checkpoint: {checkpoint_name} (run: {run_id}, {cached_str})"
-        )
-    log_dir = resume_path.parent
+            # Extract run_id and checkpoint name from path for display.
+            run_id = resume_path.parent.name
+            checkpoint_name = resume_path.name
+            cached_str = "cached" if was_cached else "downloaded"
+            print(
+                f"[INFO]: Loading checkpoint: {checkpoint_name} (run: {run_id}, {cached_str})"
+            )
+        log_dir = resume_path.parent
 
     if cfg.num_envs is not None:
         env_cfg.scene.num_envs = cfg.num_envs
@@ -124,32 +131,38 @@ def run_play(task_id: str, cfg: PlayConfig):
 
     if TRAINED_MODE and cfg.video:
         print("[INFO] Recording videos during play")
-    assert log_dir is not None  # log_dir is set in TRAINED_MODE block
-    env = VideoRecorder(
-      env,
-      video_folder=log_dir / "videos" / "play",
-      step_trigger=lambda step: step == 0,
-      video_length=cfg.video_length,
-      disable_logger=True,
-    )
+        assert log_dir is not None
+        env = VideoRecorder(
+            env,
+            video_folder=log_dir / "videos" / "play",
+            step_trigger=lambda step: step == 0,
+            video_length=cfg.video_length,
+            disable_logger=True,
+        )
 
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
     if DUMMY_MODE:
         action_shape: tuple[int, ...] = env.unwrapped.action_space.shape  # type: ignore
+
         if cfg.agent == "zero":
+
             class PolicyZero:
                 def __call__(self, obs) -> torch.Tensor:
                     del obs
                     return torch.zeros(action_shape, device=env.unwrapped.device)
+
             policy = PolicyZero()
         else:
+
             class PolicyRandom:
                 def __call__(self, obs) -> torch.Tensor:
                     del obs
                     return 2 * torch.rand(action_shape, device=env.unwrapped.device) - 1
+
             policy = PolicyRandom()
 
     else:
+        assert resume_path is not None
         runner_cls = load_runner_cls(task_id) or OnPolicyRunner
         runner = runner_cls(env, asdict(agent_cfg), device=device)
         runner.load(str(resume_path), map_location=device)
@@ -204,4 +217,4 @@ def main():
 
 
 if __name__ == "__main__":
-  main()
+    main()

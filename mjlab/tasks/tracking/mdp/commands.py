@@ -33,23 +33,95 @@ class MotionLoader:
   def __init__(
     self, motion_file: str, body_indexes: torch.Tensor, device: str = "cpu"
   ) -> None:
-    data = np.load(motion_file)
+    data = np.load(motion_file, allow_pickle=True)
     self.joint_pos = torch.tensor(data["joint_pos"], dtype=torch.float32, device=device)
     self.joint_vel = torch.tensor(data["joint_vel"], dtype=torch.float32, device=device)
-    self._body_pos_w = torch.tensor(
-      data["body_pos_w"], dtype=torch.float32, device=device
-    )
-    self._body_quat_w = torch.tensor(
-      data["body_quat_w"], dtype=torch.float32, device=device
-    )
+    self._body_pos_w = torch.tensor(data["body_pos_w"], dtype=torch.float32, device=device)
+    self._body_quat_w = torch.tensor(data["body_quat_w"], dtype=torch.float32, device=device)
     self._body_lin_vel_w = torch.tensor(
       data["body_lin_vel_w"], dtype=torch.float32, device=device
     )
     self._body_ang_vel_w = torch.tensor(
       data["body_ang_vel_w"], dtype=torch.float32, device=device
     )
+
+    # Optional object-tracking references.
+    self.object_pos_w = self._load_optional_array(
+      data,
+      keys=("object_pos_w",),
+      dtype=torch.float32,
+      device=device,
+    )
+    self.object_quat_w = self._load_optional_array(
+      data,
+      keys=("object_quat_w",),
+      dtype=torch.float32,
+      device=device,
+    )
+    self.object_lin_vel_w = self._load_optional_array(
+      data,
+      keys=("object_lin_vel_w",),
+      dtype=torch.float32,
+      device=device,
+    )
+    self.object_ang_vel_w = self._load_optional_array(
+      data,
+      keys=("object_ang_vel_w",),
+      dtype=torch.float32,
+      device=device,
+    )
+
+    # Optional interaction/contact supervision labels.
+    self.contact_labels = self._load_optional_array(
+      data,
+      keys=("contact_labels", "contact_ref", "contact_targets"),
+      dtype=torch.float32,
+      device=device,
+    )
+    self.contact_body_names = self._load_optional_names(
+      data,
+      keys=("contact_body_names",),
+    )
+    self.interaction_points_local = self._load_optional_array(
+      data,
+      keys=(
+        "interaction_points_local",
+        "object_surface_points_local",
+        "interaction_object_points_local",
+      ),
+      dtype=torch.float32,
+      device=device,
+    )
+    self.interaction_weights = self._load_optional_array(
+      data,
+      keys=("interaction_weights", "interaction_wij"),
+      dtype=torch.float32,
+      device=device,
+    )
+    self.interaction_body_names = self._load_optional_names(
+      data,
+      keys=("interaction_body_names",),
+    )
+
     self._body_indexes = body_indexes
     self.time_step_total = self.joint_pos.shape[0]
+
+    for tensor_name in (
+      "object_pos_w",
+      "object_quat_w",
+      "object_lin_vel_w",
+      "object_ang_vel_w",
+      "contact_labels",
+    ):
+      tensor = getattr(self, tensor_name)
+      if tensor is not None and tensor.shape[0] != self.time_step_total:
+        raise ValueError(
+          f"{tensor_name} first dimension ({tensor.shape[0]}) must match "
+          f"motion length ({self.time_step_total})"
+        )
+
+    if self.contact_labels is not None and self.contact_labels.ndim == 1:
+      self.contact_labels = self.contact_labels.unsqueeze(-1)
 
   @property
   def body_pos_w(self) -> torch.Tensor:
@@ -67,6 +139,29 @@ class MotionLoader:
   def body_ang_vel_w(self) -> torch.Tensor:
     return self._body_ang_vel_w[:, self._body_indexes]
 
+  @staticmethod
+  def _load_optional_array(
+    data: np.lib.npyio.NpzFile,
+    keys: tuple[str, ...],
+    dtype: torch.dtype,
+    device: str,
+  ) -> torch.Tensor | None:
+    for key in keys:
+      if key in data.files:
+        return torch.tensor(data[key], dtype=dtype, device=device)
+    return None
+
+  @staticmethod
+  def _load_optional_names(
+    data: np.lib.npyio.NpzFile,
+    keys: tuple[str, ...],
+  ) -> tuple[str, ...]:
+    for key in keys:
+      if key in data.files:
+        names_arr = np.array(data[key]).reshape(-1)
+        return tuple(str(name) for name in names_arr.tolist())
+    return ()
+
 
 class MotionCommand(CommandTerm):
   cfg: MotionCommandCfg
@@ -76,6 +171,10 @@ class MotionCommand(CommandTerm):
     super().__init__(cfg, env)
 
     self.robot: Entity = env.scene[cfg.entity_name]
+    self.object_entity: Entity | None = None
+    if cfg.object_entity_name is not None and cfg.object_entity_name in env.scene.entities:
+      self.object_entity = env.scene[cfg.object_entity_name]
+
     self.robot_anchor_body_index = self.robot.body_names.index(
       self.cfg.anchor_body_name
     )
@@ -181,6 +280,60 @@ class MotionCommand(CommandTerm):
     return self.motion.body_ang_vel_w[self.time_steps, self.motion_anchor_body_index]
 
   @property
+  def has_object_reference(self) -> bool:
+    return (
+      self.motion.object_pos_w is not None
+      and self.motion.object_quat_w is not None
+      and self.motion.object_lin_vel_w is not None
+    )
+
+  @property
+  def object_pos_w(self) -> torch.Tensor:
+    if self.motion.object_pos_w is None:
+      raise RuntimeError("Motion file does not contain object_pos_w")
+    return self.motion.object_pos_w[self.time_steps] + self._env.scene.env_origins
+
+  @property
+  def object_quat_w(self) -> torch.Tensor:
+    if self.motion.object_quat_w is None:
+      raise RuntimeError("Motion file does not contain object_quat_w")
+    return self.motion.object_quat_w[self.time_steps]
+
+  @property
+  def object_lin_vel_w(self) -> torch.Tensor:
+    if self.motion.object_lin_vel_w is None:
+      raise RuntimeError("Motion file does not contain object_lin_vel_w")
+    return self.motion.object_lin_vel_w[self.time_steps]
+
+  @property
+  def object_ang_vel_w(self) -> torch.Tensor:
+    if self.motion.object_ang_vel_w is None:
+      raise RuntimeError("Motion file does not contain object_ang_vel_w")
+    return self.motion.object_ang_vel_w[self.time_steps]
+
+  @property
+  def contact_labels_ref(self) -> torch.Tensor | None:
+    if self.motion.contact_labels is None:
+      return None
+    return self.motion.contact_labels[self.time_steps]
+
+  @property
+  def contact_body_names_ref(self) -> tuple[str, ...]:
+    return self.motion.contact_body_names
+
+  @property
+  def interaction_points_local_ref(self) -> torch.Tensor | None:
+    return self.motion.interaction_points_local
+
+  @property
+  def interaction_weights_ref(self) -> torch.Tensor | None:
+    return self.motion.interaction_weights
+
+  @property
+  def interaction_body_names_ref(self) -> tuple[str, ...]:
+    return self.motion.interaction_body_names
+
+  @property
   def robot_joint_pos(self) -> torch.Tensor:
     return self.robot.data.joint_pos
 
@@ -219,6 +372,24 @@ class MotionCommand(CommandTerm):
   @property
   def robot_anchor_ang_vel_w(self) -> torch.Tensor:
     return self.robot.data.body_link_ang_vel_w[:, self.robot_anchor_body_index]
+
+  def _sync_object_state_to_reference(self, env_ids: torch.Tensor) -> None:
+    if env_ids.numel() == 0 or self.object_entity is None:
+      return
+    if self.object_entity.is_fixed_base or not self.has_object_reference:
+      return
+
+    object_root_state = torch.cat(
+      [
+        self.object_pos_w[env_ids],
+        self.object_quat_w[env_ids],
+        self.object_lin_vel_w[env_ids],
+        self.object_ang_vel_w[env_ids],
+      ],
+      dim=-1,
+    )
+    self.object_entity.write_root_state_to_sim(object_root_state, env_ids=env_ids)
+    self.object_entity.clear_state(env_ids=env_ids)
 
   def _update_metrics(self):
     self.metrics["error_anchor_pos"] = torch.norm(
@@ -371,6 +542,7 @@ class MotionCommand(CommandTerm):
       dim=-1,
     )
     self.robot.write_root_state_to_sim(root_state, env_ids=env_ids)
+    self._sync_object_state_to_reference(env_ids)
 
     self.robot.clear_state(env_ids=env_ids)
 
@@ -492,6 +664,7 @@ class MotionCommandCfg(CommandTermCfg):
   adaptive_uniform_ratio: float = 0.1
   adaptive_alpha: float = 0.001
   sampling_mode: Literal["adaptive", "uniform", "start"] = "adaptive"
+  object_entity_name: str | None = None
 
   @dataclass
   class VizCfg:

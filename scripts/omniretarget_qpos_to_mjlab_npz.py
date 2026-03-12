@@ -142,7 +142,7 @@ class Args:
     "right_wrist_yaw_link",
   )
   contact_threshold: float = 0.02
-  object_half_extents: tuple[float, float, float] = (0.2, 0.2, 0.2)
+  object_half_extents: tuple[float, float, float] = (0.14, 0.14, 0.14)
 
 
 def main(args: Args) -> None:

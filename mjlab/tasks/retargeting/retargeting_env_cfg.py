@@ -116,7 +116,7 @@ def make_retargeting_env_cfg() -> ManagerBasedRlEnvCfg:
   cfg.rewards = {
     "stage0_track": RewardTermCfg(
       func=mdp.stage0_track_reward,
-      weight=1.0,
+      weight=5.0,
       params={
         "command_name": "motion",
         "anchor_pos_std": 0.3,
@@ -136,12 +136,12 @@ def make_retargeting_env_cfg() -> ManagerBasedRlEnvCfg:
     ),
     "joint_limit": RewardTermCfg(
       func=mdp.joint_pos_limits,
-      weight=-10.0,
+      weight=-1.0,
       params={"asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))},
     ),
     "self_collisions": RewardTermCfg(
       func=mdp.self_collision_cost,
-      weight=-10.0,
+      weight=-1.0,
       params={"sensor_name": "self_collision"},
     ),
   }
